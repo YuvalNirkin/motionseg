@@ -68,6 +68,9 @@ private:
     cv::Mat renderWeightMap(const cv::Mat& weightMap);
     void drawSegmentation(cv::Mat& frame_color, const cv::Rect& rect, const cv::Mat& seg);
 
+    void writeSegmentation(cv::Mat& frame_color, const cv::Rect& rect, const cv::Mat& seg,
+        int frame_id);
+
 private:
     int r, n;
     int frame_counter, cfi;
@@ -312,7 +315,8 @@ void FaceMotionSegImpl::calcCurrFrameMotion()
         }
     }
     /////////////
-
+    writeSegmentation(frames_color[cfi], face, seg, frame_ids[cfi]);
+    /*
     if (!outputPath.empty())
     {
         cv::Mat frame_cropped = frames_color[cfi](face);
@@ -336,6 +340,7 @@ void FaceMotionSegImpl::calcCurrFrameMotion()
         cv::imwrite(str(boost::format("%s\\seg_%04d.png") %
             outputPath % frame_ids[cfi]), seg_cropped);
     }
+    */
 }
 
 void FaceMotionSegImpl::showFloatImage(const std::string& title, const cv::Mat& img)
@@ -880,6 +885,53 @@ void FaceMotionSegImpl::drawSegmentation(cv::Mat& frame_color, const cv::Rect& r
             ++img_data;
         }
     }
+}
+
+void FaceMotionSegImpl::writeSegmentation(cv::Mat& frame_color, const cv::Rect& rect,
+    const cv::Mat& seg, int frame_id)
+{
+    if (outputPath.empty()) return;
+
+    // Convert segmentation to color image
+    cv::Mat seg_color = cv::Mat::zeros(seg.size(), CV_8UC3);
+    int r, c, delta;
+    cv::Point2i tl = rect.tl(), br = rect.br();
+    cv::Point3_<uchar>* seg_color_data = nullptr;
+    unsigned char* seg_data = nullptr;
+    for (r = tl.y; r < br.y; ++r)
+    {
+        delta = r*seg.cols + tl.x;
+        seg_color_data = ((cv::Point3_<uchar>*)seg_color.data) + delta;
+        seg_data = seg.data + delta;
+        for (c = tl.x; c < br.x; ++c)
+        {
+            if (*seg_data++ > 0)
+                *seg_color_data = cv::Point3_<uchar>(128, 128, 192);  // Pink
+            ++seg_color_data;
+        }
+    }
+
+    // Crop segmentation and corresponding frame
+    cv::Mat frame_cropped = frame_color(rect);
+    cv::Mat seg_cropped = seg_color(rect);
+    cv::MatSize size = frame_cropped.size;
+    int max_index = std::distance(size.p, std::max_element(size.p, size.p + 2));
+    if (size[max_index] > 500)
+    {
+        float scale = 500.0f / (float)size[max_index];
+        int w = (int)std::round(frame_cropped.cols * scale);
+        int h = (int)std::round(frame_cropped.rows * scale);
+        cv::resize(frame_cropped, frame_cropped, cv::Size(w, h));
+        cv::resize(seg_cropped, seg_cropped, cv::Size(w, h));
+    }
+
+    //cv::resize(frame_cropped, frame_cropped, cv::Size(500, 500));
+    //cv::resize(seg_cropped, seg_cropped, cv::Size(500, 500));
+
+    cv::imwrite(str(boost::format("%s\\frame_%04d.png") %
+        outputPath % frame_id), frame_cropped);
+    cv::imwrite(str(boost::format("%s\\seg_%04d.png") %
+        outputPath % frame_id), seg_cropped);
 }
 
 }   // namespace motionseg
