@@ -1,9 +1,12 @@
-function segshow(inDir)
-%SEGSHOW Preview best segmentation augmented on the corresponding frames.
+function segshow(inDir, outDir)
+%SEGSHOW(inDir, outDir) Preview best segmentation augmented on the
+%   corresponding frames.
 %   Use arrows to navigate and enter, escape or space to exit.
+%   If output directory is provided than use 's' key to save.
 %
 %   Input:
 %       inDir - motionseg output directory with verbose >= 1
+%       outDir - Optional output directory for saving segmentations
 
 %% Read summary
 summaryPath = fullfile(inDir, 'summary.csv');
@@ -30,7 +33,8 @@ while(running)
     score = scores(i);
     segDebugFileName = fullfile(inDir,...
         ['seg_debug_' num2str(seg_id, '%04d') '.jpg']);
-    imshow(segDebugFileName)
+    I = imread(segDebugFileName);
+    imshow(I);
     title(['ID = ' num2str(seg_id) '  Score = ' num2str(score)...
         '   [' num2str(i) ' / ' num2str(length(seg_ids)) ']']);
     waitforbuttonpress
@@ -51,6 +55,15 @@ close(h_fig);
                 running = false;
             case 'space'
                 running = false;
+            case 's'
+                if(exist('outDir', 'var'))
+                    [inDirPath inDirName] = fileparts(inDir);
+                    fileName = fullfile(outDir,...
+                        [inDirName '_seg_debug_' num2str(seg_id, '%04d') '.jpg']);
+                    disp(['Writing ' fileName]);
+                    imwrite(I, fileName);
+                end
+                    
         end
     end
 end
