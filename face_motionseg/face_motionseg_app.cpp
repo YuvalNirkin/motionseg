@@ -50,7 +50,7 @@ int main(int argc, char* argv[])
             ("scale,s", value<double>(&frame_scale)->default_value(1.0), "frame scale")
             ("landmarks,l", value<string>(&landmarksModelPath), "path to landmarks model file")
             ("verbose,v", value<unsigned int>(&verbose)->default_value(0), "output debug information")
-            ("preview,p", value<bool>(&preview)->default_value(false), "preview loop")
+            ("preview,p", value<bool>(&preview)->default_value(false), "toggle preview loop")
             ;
         variables_map vm;
         store(command_line_parser(argc, argv).options(desc).

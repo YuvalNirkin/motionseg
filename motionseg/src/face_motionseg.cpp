@@ -12,6 +12,7 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/cudastereo.hpp>
+#include <opencv2/cudaarithm.hpp>
 
 // dlib
 #include <dlib/opencv.h>
@@ -77,9 +78,11 @@ private:
     cv::Size frame_size;
     std::vector<cv::Mat> frames_color, frames_gray;
     std::vector<cv::cuda::GpuMat> d_frames_color, d_frames_gray;
+    std::vector<cv::cuda::GpuMat> d_frames_color_flip, d_frames_gray_flip;//
     std::vector<int> frame_ids;
     cv::Mat disp_dbf;
     cv::cuda::GpuMat d_disp, d_disp_dbf;
+    cv::cuda::GpuMat d_disp_dbf_flip;
 
     cv::Ptr<cv::cuda::StereoBM> bm;
     cv::Ptr<cv::cuda::DisparityBilateralFilter> dbf;
@@ -125,6 +128,8 @@ FaceMotionSegImpl::FaceMotionSegImpl(const cv::Size& frame_size, int frame_radiu
     frames_gray(n),
     d_frames_color(n),
     d_frames_gray(n),
+    d_frames_color_flip(n),
+    d_frames_gray_flip(n),
     frame_ids(n),
     pool(r + 1),
     rects(n),
@@ -184,6 +189,9 @@ void FaceMotionSegImpl::addFrame(const cv::Mat& frame, int frame_id)
     d_frames_color[i].upload(frame);
     d_frames_gray[i].upload(frames_gray[i]);
 
+    cv::cuda::flip(d_frames_gray[i], d_frames_color_flip[i], 1);//
+    cv::cuda::flip(d_frames_gray[i], d_frames_gray_flip[i], 1);//
+
     if (frame_counter >= n)
         calcCurrFrameMotion();
 }
@@ -220,6 +228,9 @@ void FaceMotionSegImpl::calcCurrFrameMotion()
 {
     cv::Mat flow_src, flow_dst;
     cv::Mat W = cv::Mat::zeros(frame_size, CV_32F);
+    cv::Mat W_flip = cv::Mat::zeros(frame_size, CV_32F);
+    cv::Mat seg_flip, seg_flip_out, seg_total, seg_total_out;
+    cv::Mat temp;
     for (int i = 0, f = (cfi - r + n) % n; i < n; ++i, f = (f + 1) % n)
     {
         if (f == cfi) continue;
@@ -228,16 +239,27 @@ void FaceMotionSegImpl::calcCurrFrameMotion()
         d_disp_dbf.download(disp_dbf);
 
         /// 
-        cv::Mat temp;
         disp_dbf.convertTo(temp, CV_32F);
         W += temp;
 
         //showFloatImage((boost::format("disp_dbf (%d)") % i).str(), disp_dbf);
         //cv::waitKey(1);
+
+        // Now for flipped frames
+        bm->compute(d_frames_gray_flip[cfi], d_frames_gray_flip[f], d_disp);
+        dbf->apply(d_disp, d_frames_color_flip[cfi], d_disp_dbf_flip);
+        cv::cuda::flip(d_disp_dbf_flip, d_disp_dbf, 1);
+        d_disp_dbf.download(disp_dbf);
+        disp_dbf.convertTo(temp, CV_32F);
+        W_flip += temp;
     }
+
+    cv::Mat W_total = (W + W_flip)*0.5f;
 
     // Initialize segmentation drawing
     seg_out = frames_color[cfi].clone();
+    seg_flip_out = frames_color[cfi].clone();//
+    seg_total_out = frames_color[cfi].clone();//
 
     // Find main face bounding box
     //cv::Rect face;
@@ -248,9 +270,15 @@ void FaceMotionSegImpl::calcCurrFrameMotion()
     cv::Point2f& center = centers[cfi];
 
     float t = calcDynamicThreshold(W, face);
+    float t_flip = calcDynamicThreshold(W_flip, face);
+    float t_total = calcDynamicThreshold(W_total, face);
     cv::Mat seg_thresh = calcSegmentation(frames_color[cfi], W, face, center, t);
     seg = calcSegmentation_2(frames_color[cfi], W, face, center, t);
     removeNeck(seg, face, shapes[cfi]);
+    seg_flip = calcSegmentation_2(frames_color[cfi], W_flip, face, center, t_flip);//
+    removeNeck(seg_flip, face, shapes[cfi]);//
+    seg_total = calcSegmentation_2(frames_color[cfi], W_total, face, center, t_total);//
+    removeNeck(seg_total, face, shapes[cfi]);//
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(seg.clone(), contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE);
     removeSecondaryObjects(seg, face, contours);
@@ -260,6 +288,7 @@ void FaceMotionSegImpl::calcCurrFrameMotion()
     summary.push_back(std::make_pair(frame_ids[cfi], score));
 
     cv::Mat W_out, seg_thresh_out;
+    cv::Mat W_flip_out, W_total_out;
     if (verbose >= 2)
     {
         W_out = renderWeightMap(W);
@@ -269,6 +298,24 @@ void FaceMotionSegImpl::calcCurrFrameMotion()
             cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 165, 255), 1, CV_AA);
         cv::putText(W_out, (boost::format("Score: %f") % score).str(), cv::Point(15, 55),
             cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 165, 255), 1, CV_AA);
+
+        ///
+        W_flip_out = renderWeightMap(W_flip);
+        cv::putText(W_flip_out, (boost::format("Frame: %d") % frame_ids[cfi]).str(), cv::Point(15, 15),
+            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 165, 255), 1, CV_AA);
+        cv::putText(W_flip_out, (boost::format("Threshold: %f") % t).str(), cv::Point(15, 35),
+            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 165, 255), 1, CV_AA);
+        cv::putText(W_flip_out, (boost::format("Score: %f") % score).str(), cv::Point(15, 55),
+            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 165, 255), 1, CV_AA);
+
+        W_total_out = renderWeightMap(W_total);
+        cv::putText(W_total_out, (boost::format("Frame: %d") % frame_ids[cfi]).str(), cv::Point(15, 15),
+            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 165, 255), 1, CV_AA);
+        cv::putText(W_total_out, (boost::format("Threshold: %f") % t).str(), cv::Point(15, 35),
+            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 165, 255), 1, CV_AA);
+        cv::putText(W_total_out, (boost::format("Score: %f") % score).str(), cv::Point(15, 55),
+            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 165, 255), 1, CV_AA);
+        ///
 
         seg_thresh_out = frames_color[cfi].clone();
         drawSegmentation(seg_thresh_out, face, seg_thresh);
@@ -282,11 +329,18 @@ void FaceMotionSegImpl::calcCurrFrameMotion()
 
         cv::imshow("W", W_out);
         cv::imshow("seg_thresh", seg_thresh_out);
+        //cv::imshow("W_flip", W_flip_out);//
+        cv::imshow("W_total", W_total_out);//
     }
 
     drawSegmentation(seg_out, face, seg);
     //renderLandmarks(seg_out, shapes[cfi]);
     cv::rectangle(seg_out, face, cv::Scalar(0, 255, 0), 1);
+
+    drawSegmentation(seg_flip_out, face, seg_flip);//
+    cv::rectangle(seg_flip_out, face, cv::Scalar(0, 255, 0), 1);//
+    drawSegmentation(seg_total_out, face, seg_total);//
+    cv::rectangle(seg_total_out, face, cv::Scalar(0, 255, 0), 1);//
 
     /* 
     cv::putText(seg_out, (boost::format("Frame: %d") % frame_ids[cfi]).str(), cv::Point(15, 15),
@@ -311,6 +365,11 @@ void FaceMotionSegImpl::calcCurrFrameMotion()
                     outputPath % frame_ids[cfi]), W_out);
                 cv::imwrite(str(boost::format("%s\\seg_thresh_%04d.jpg") %
                     outputPath % frame_ids[cfi]), seg_thresh_out);
+
+                cv::imwrite(str(boost::format("%s\\seg_debug_flip_%04d.jpg") %
+                    outputPath % frame_ids[cfi]), seg_flip_out);//
+                cv::imwrite(str(boost::format("%s\\seg_debug_total_%04d.jpg") %
+                    outputPath % frame_ids[cfi]), seg_total_out);//
             }
         }
     }
